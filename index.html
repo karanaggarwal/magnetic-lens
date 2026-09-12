@@ -259,9 +259,10 @@
       else actState.textContent='strong disturbance';
     }
 
-    // canvas
-    ctx.globalCompositeOperation='source-over';
-    ctx.fillStyle='rgba(7,10,13,'+(reduce?1:0.16)+')';ctx.fillRect(0,0,W,H);
+    // canvas — fade trails by ERASING (destination-out) so the camera stays visible
+    if(reduce){ ctx.clearRect(0,0,W,H); }
+    else { ctx.globalCompositeOperation='destination-out';
+           ctx.fillStyle='rgba(0,0,0,0.14)'; ctx.fillRect(0,0,W,H); }
     ctx.globalCompositeOperation='lighter';
     if(!calibrating&&smooth>0.03)spawn(smooth,rgb);
     for(let i=parts.length-1;i>=0;i--){const p=parts[i];
