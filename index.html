@@ -305,7 +305,8 @@
   const sensor_state={api:'none',ok:false,detail:''};
 
   function row(k,v,cls){return `<div class="row"><span class="k">${k}</span><span class="${cls||''}">${v}</span></div>`;}
-  function renderDiag(){
+  function withTimeout(p,ms,label){return Promise.race([p,new Promise((_,rej)=>setTimeout(()=>rej(new Error(label)),ms))]);}
+  function renderDiag(checking){
     const d=device();
     const embedded = window.top!==window.self;
     const secure = window.isSecureContext;
@@ -323,6 +324,12 @@
 
     // verdict
     let msg='';
+    if(checking && !sensor_state.ok && !sensor_state.detail && !cam_state.detail){
+      err.textContent='Requesting camera & sensor access — tap Allow on the prompts…'; return;
+    }
+    if(!d.iOS && !d.android){
+      err.textContent='This is a laptop/desktop — it has no magnetometer. Open this page on a phone.'; return;
+    }
     if(embedded){
       msg='This is running embedded in a sandbox — camera & magnetometer are blocked here. Open the deployed page directly (full-screen tab), not inside another app.';
     } else if(!secure){
@@ -382,18 +389,34 @@
     return false;
   }
 
+  let starting=false;
   async function start(){
-    err.textContent='';D.hidden=true;
-    try{const s=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}},audio:false});
-      cam.srcObject=s;await cam.play().catch(()=>{});cam_state.ok=true;}
-    catch(e){cam_state.detail=e.name||'blocked';}
+    if(starting)return; starting=true;
+    err.textContent='';go.textContent='Starting…';go.disabled=true;
+    renderDiag(true);   // show the panel immediately — never a blank press
 
-    const ok=await initSensor();
-    if(!ok){renderDiag();return;}
-    gate.hidden=true;hud.hidden=false;calibrate();frame();
+    // camera runs in parallel so its prompt can't block sensor init
+    (async()=>{
+      try{
+        if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia) throw new Error('unavailable');
+        const s=await withTimeout(navigator.mediaDevices.getUserMedia(
+          {video:{facingMode:{ideal:'environment'}},audio:false}),12000,'timeout');
+        cam.srcObject=s;await cam.play().catch(()=>{});cam_state.ok=true;
+      }catch(e){cam_state.detail=e.name||e.message||'blocked';}
+      if(!gate.hidden) renderDiag(true);
+    })();
+
+    let ok=false;
+    try{ ok=await initSensor(); }
+    catch(e){ if(!sensor_state.detail) sensor_state.detail=e.name||'error'; }
+
+    starting=false;
+    if(ok){go.textContent='Start the lens';go.disabled=false;
+      gate.hidden=true;hud.hidden=false;calibrate();frame();}
+    else{go.textContent='Start the lens';go.disabled=false;renderDiag(false);}
   }
   go.addEventListener('click',start);
-  recheck.addEventListener('click',()=>{sensor_state.ok=false;sensor_state.detail='';heading=null;start();});
+  recheck.addEventListener('click',()=>{sensor_state.ok=false;sensor_state.detail='';cam_state.detail='';heading=null;start();});
 
   modeBtn.addEventListener('click',()=>{mode=mode==='low'?'high':'low';modeBtn.dataset.on=mode;
     if(mode==='low'){modeName.textContent='LOW · magnitude';modeHint.textContent='metal, magnets, static structure';}
