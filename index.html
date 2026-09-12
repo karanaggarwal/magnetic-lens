@@ -90,6 +90,13 @@
   .legrow{display:flex;justify-content:space-between;font-family:"IBM Plex Mono",monospace;
     font-size:10px;color:var(--muted);letter-spacing:.08em}
 
+  .views{position:absolute;left:0;right:0;bottom:calc(96px + env(safe-area-inset-bottom));
+    display:flex;gap:8px;justify-content:center;flex-wrap:wrap;padding:0 16px}
+  .pill{background:var(--panel);border:1px solid var(--stroke);color:var(--muted);
+    font-size:13px;font-weight:600;padding:8px 16px;border-radius:30px;letter-spacing:.02em;
+    backdrop-filter:blur(9px);-webkit-backdrop-filter:blur(9px);transition:all .18s}
+  .pill.on{color:#04110F;background:var(--cool);border-color:var(--cool);
+    box-shadow:0 4px 16px rgba(57,226,208,.28)}
   .dock{position:absolute;left:18px;right:18px;bottom:max(20px,env(safe-area-inset-bottom));
     display:flex;gap:11px;align-items:stretch}
   button{font-family:"Archivo",sans-serif;border:0;cursor:pointer;color:var(--hud)}
@@ -103,7 +110,7 @@
     display:grid;place-items:center;font-size:20px;backdrop-filter:blur(9px);-webkit-backdrop-filter:blur(9px)}
   .icon:active{transform:scale(.94)}
 
-  .note{position:absolute;left:50%;bottom:calc(96px + env(safe-area-inset-bottom));
+  .note{position:absolute;left:50%;top:calc(92px + env(safe-area-inset-top));
     transform:translateX(-50%);max-width:calc(100% - 36px);background:var(--panel);
     border:1px solid var(--stroke);color:var(--muted);font-size:11px;letter-spacing:.02em;
     padding:7px 13px;border-radius:20px;text-align:center;
@@ -160,7 +167,7 @@
     </div>
   </div>
 
-  <div class="stage">
+  <div class="stage" id="stage">
     <div class="reticle">
       <div class="compass" id="compass">
         <div class="cardinal n">N</div><div class="cardinal s">S</div>
@@ -174,12 +181,20 @@
     </div>
   </div>
 
-  <div class="legend">
+  <div class="legend" id="legend">
     <div class="legbar"><div class="legmark" id="legmark" style="left:0%"></div></div>
     <div class="legrow"><span>calm</span><span>rising</span><span>disturbance</span></div>
   </div>
 
   <div class="note" id="note"></div>
+
+  <div class="views" id="views">
+    <button class="pill on" data-v="fog">Fog</button>
+    <button class="pill" data-v="wave">Wave</button>
+    <button class="pill" data-v="trail">Trail</button>
+    <button class="pill" data-v="hunt">Hunt</button>
+    <button class="pill" data-v="dial">Dial</button>
+  </div>
 
   <div class="dock">
     <button class="mode" id="mode" data-on="low">
@@ -244,7 +259,9 @@
     const n=buf.length||1;sx/=n;sy/=n;const R=Math.min(1,Math.hypot(sx,sy));
     return {mean:(Math.atan2(sy,sx)*180/Math.PI+360)%360,std:Math.sqrt(Math.max(0,-2*Math.log(R||1e-9)))*180/Math.PI};}
 
+  let pitch=0; // front-back tilt (beta), used by the Trail map
   function onOrient(e){
+    if(typeof e.beta==='number') pitch=e.beta;
     let h=null;
     if(typeof e.webkitCompassHeading==='number'&&!isNaN(e.webkitCompassHeading)) h=e.webkitCompassHeading;
     else if(typeof e.alpha==='number') h=(360-e.alpha)%360;
@@ -277,6 +294,51 @@
   const COOL=hx('#39E2D0'),WARN=hx('#FFB020'),HOT=hx('#FF4747');
   function ramp(t){let a,b,u;if(t<0.5){a=COOL;b=WARN;u=t/0.5;}else{a=WARN;b=HOT;u=(t-0.5)/0.5;}
     return [Math.round(lerp(a[0],b[0],u)),Math.round(lerp(a[1],b[1],u)),Math.round(lerp(a[2],b[2],u))];}
+  const rgbStr=r=>`rgb(${r[0]},${r[1]},${r[2]})`;
+
+  // ---- view switching ----
+  let view='fog';
+  const stage=$('stage'), legend=$('legend');
+  const viewVis={ // which HUD chrome shows per view
+    fog:  {stage:true,  legend:true},
+    wave: {stage:false, legend:false},
+    trail:{stage:false, legend:true},
+    hunt: {stage:false, legend:false},
+    dial: {stage:false, legend:false}
+  };
+  function setView(v){
+    view=v; ctx.clearRect(0,0,W,H); parts.length=0;
+    const vis=viewVis[v]; stage.hidden=!vis.stage; legend.hidden=!vis.legend;
+    document.querySelectorAll('.pill').forEach(p=>p.classList.toggle('on',p.dataset.v===v));
+    if(v==='hunt') ensureAudio();
+  }
+  $('views').addEventListener('click',e=>{const b=e.target.closest('.pill');if(b)setView(b.dataset.v);});
+
+  // ---- peak-hold + history + heat map (shared data) ----
+  let peak=0, peakHeading=0;
+  const hist=[];                 // recent smooth values for the Wave view
+  let heat=null, hctx=null;      // persistent off-screen canvas for the Trail view
+  function ensureHeat(){ if(!heat||heat.width!==W||heat.height!==H){
+    heat=document.createElement('canvas');heat.width=W;heat.height=H;hctx=heat.getContext('2d');} }
+  function resetData(){ peak=0; hist.length=0; if(hctx) hctx.clearRect(0,0,heat.width,heat.height); }
+
+  // ---- audio (Hunt = Geiger clicks); haptics where supported (Android, not iOS) ----
+  let audioCtx=null, nextClick=0;
+  function ensureAudio(){ try{
+    if(!audioCtx){audioCtx=new (window.AudioContext||window.webkitAudioContext)();}
+    if(audioCtx.state==='suspended') audioCtx.resume();
+  }catch(e){} }
+  function click(level){
+    if(!audioCtx) return;
+    const t=audioCtx.currentTime;
+    const o=audioCtx.createOscillator(), g=audioCtx.createGain();
+    o.type='square'; o.frequency.value=520+level*900;
+    g.gain.setValueAtTime(0.0001,t);
+    g.gain.exponentialRampToValueAtTime(0.18+level*0.25,t+0.005);
+    g.gain.exponentialRampToValueAtTime(0.0001,t+0.06);
+    o.connect(g).connect(audioCtx.destination); o.start(t); o.stop(t+0.07);
+    if(navigator.vibrate) navigator.vibrate(8);
+  }
 
   let smooth=0,pulseP=0;
   function frame(){
@@ -321,12 +383,31 @@
       else actState.textContent='strong disturbance';
     }
 
-    // canvas — fade trails by ERASING (destination-out) so the camera stays visible
+    if(smooth>peak){peak=smooth;peakHeading=heading||0;}
+    if(view==='fog')   renderFog(smooth,rgb);
+    else if(view==='wave')  renderWave(smooth,rgb);
+    else if(view==='trail') renderTrail(smooth,rgb);
+    else if(view==='hunt')  renderHunt(smooth,rgb);
+    else if(view==='dial')  renderDial(smooth,rgb);
+
+    if(!stage.hidden){ // reticle chrome only when the fog view shows it
+      if(heading!=null) compass.style.transform=`rotate(${-heading}deg)`;
+      ring.style.borderColor=`rgba(${rgb[0]},${rgb[1]},${rgb[2]},${0.35+smooth*0.5})`;
+      core.style.transform=`scale(${1+smooth*2.2})`;
+      if(!reduce){pulseP+=0.02+smooth*0.06;if(pulseP>1)pulseP=0;
+        pulse.style.opacity=(0.5*(1-pulseP)*Math.min(1,smooth*2)).toFixed(3);
+        pulse.style.transform=`scale(${0.6+pulseP*0.8})`;}
+    }
+    if(!legend.hidden) legmark.style.left=(smooth*100).toFixed(1)+'%';
+  }
+
+  // ---------- VIEW RENDERERS (all draw over the live camera via screen-blend) ----------
+  function renderFog(level,rgb){
     if(reduce){ ctx.clearRect(0,0,W,H); }
     else { ctx.globalCompositeOperation='destination-out';
            ctx.fillStyle='rgba(0,0,0,0.14)'; ctx.fillRect(0,0,W,H); }
     ctx.globalCompositeOperation='lighter';
-    if(!calibrating&&smooth>0.03)spawn(smooth,rgb);
+    if(!calibrating&&level>0.03)spawn(level,rgb);
     for(let i=parts.length-1;i>=0;i--){const p=parts[i];
       p.x+=p.vx;p.y+=p.vy;p.vx*=0.97;p.vy*=0.97;p.life-=p.dr;
       if(p.life<=0){parts.splice(i,1);continue;}
@@ -335,15 +416,96 @@
       g.addColorStop(0.6,`rgba(${p.c[0]},${p.c[1]},${p.c[2]},${al*0.4})`);
       g.addColorStop(1,`rgba(${p.c[0]},${p.c[1]},${p.c[2]},0)`);
       ctx.fillStyle=g;ctx.beginPath();ctx.arc(p.x,p.y,p.r,0,7);ctx.fill();}
+  }
 
-    // reticle: compass rotates so N points to real north; core + pulse react to field
-    if(heading!=null) compass.style.transform=`rotate(${-heading}deg)`;
-    ring.style.borderColor=`rgba(${rgb[0]},${rgb[1]},${rgb[2]},${0.35+smooth*0.5})`;
-    core.style.transform=`scale(${1+smooth*2.2})`;
-    legmark.style.left=(smooth*100).toFixed(1)+'%';
-    if(!reduce){pulseP+=0.02+smooth*0.06;if(pulseP>1)pulseP=0;
-      pulse.style.opacity=(0.5*(1-pulseP)*Math.min(1,smooth*2)).toFixed(3);
-      pulse.style.transform=`scale(${0.6+pulseP*0.8})`;}
+  function renderWave(level,rgb){
+    hist.push(level); const MAX=Math.floor(W/ (2*DPR)); if(hist.length>MAX)hist.shift();
+    ctx.globalCompositeOperation='source-over'; ctx.clearRect(0,0,W,H);
+    const mid=H*0.5, amp=H*0.34;
+    // grid
+    ctx.strokeStyle='rgba(150,220,215,0.10)'; ctx.lineWidth=1*DPR;
+    for(let i=0;i<=4;i++){const y=mid-amp+ (i/4)*amp*2;ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();}
+    // waveform (mirrored area) colored by current level
+    const col=rgbStr(rgb); ctx.lineWidth=2.5*DPR;
+    ctx.beginPath();
+    for(let i=0;i<hist.length;i++){const x=(i/(MAX-1))*W, y=mid-hist[i]*amp; i?ctx.lineTo(x,y):ctx.moveTo(x,y);}
+    ctx.strokeStyle=col; ctx.stroke();
+    // fill under
+    ctx.lineTo(W,mid); ctx.lineTo(0,mid); ctx.closePath();
+    ctx.fillStyle=`rgba(${rgb[0]},${rgb[1]},${rgb[2]},0.14)`; ctx.fill();
+    // leading dot
+    if(hist.length){const x=((hist.length-1)/(MAX-1))*W,y=mid-hist[hist.length-1]*amp;
+      ctx.beginPath();ctx.arc(x,y,5*DPR,0,7);ctx.fillStyle=col;ctx.fill();}
+  }
+
+  function renderTrail(level,rgb){
+    ensureHeat();
+    if(!calibrating && level>0.05 && heading!=null){
+      const x=(heading/360)*W;
+      const y=H*(1-Math.min(1,Math.max(0,(pitch+30)/120)));
+      const r=(14+level*46)*DPR;
+      hctx.globalCompositeOperation='lighter';
+      const g=hctx.createRadialGradient(x,y,0,x,y,r);
+      g.addColorStop(0,`rgba(${rgb[0]},${rgb[1]},${rgb[2]},${0.10+level*0.30})`);
+      g.addColorStop(1,`rgba(${rgb[0]},${rgb[1]},${rgb[2]},0)`);
+      hctx.fillStyle=g;hctx.beginPath();hctx.arc(x,y,r,0,7);hctx.fill();
+    }
+    ctx.globalCompositeOperation='source-over'; ctx.clearRect(0,0,W,H);
+    ctx.drawImage(heat,0,0);
+    // current cursor
+    if(heading!=null){const x=(heading/360)*W,y=H*(1-Math.min(1,Math.max(0,(pitch+30)/120)));
+      ctx.strokeStyle=rgbStr(rgb);ctx.lineWidth=2*DPR;ctx.beginPath();ctx.arc(x,y,10*DPR,0,7);ctx.stroke();}
+  }
+
+  let ringsH=[]; // hunt click rings
+  function renderHunt(level,rgb){
+    ctx.globalCompositeOperation='source-over'; ctx.clearRect(0,0,W,H);
+    const cx=W/2, cy=H*0.46;
+    // click cadence: from ~1.1s (calm) to ~55ms (hot)
+    if(!calibrating){
+      const interval = lerp(1100,55,level);
+      const now=performance.now();
+      if(now>=nextClick){ nextClick=now+interval; click(level);
+        ringsH.push({r:14*DPR,life:1,c:rgb}); }
+    }
+    ctx.globalCompositeOperation='lighter';
+    for(let i=ringsH.length-1;i>=0;i--){const rr=ringsH[i];rr.r+=3.4*DPR;rr.life-=0.03;
+      if(rr.life<=0){ringsH.splice(i,1);continue;}
+      ctx.strokeStyle=`rgba(${rr.c[0]},${rr.c[1]},${rr.c[2]},${rr.life*0.7})`;
+      ctx.lineWidth=3*DPR;ctx.beginPath();ctx.arc(cx,cy,rr.r,0,7);ctx.stroke();}
+    // big readout
+    ctx.globalCompositeOperation='source-over';
+    ctx.fillStyle=rgbStr(rgb);ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.font=`700 ${Math.round(64*DPR)}px "IBM Plex Mono",monospace`;
+    ctx.fillText(Math.round(level*100)+'%',cx,cy);
+    ctx.font=`600 ${Math.round(15*DPR)}px Archivo,sans-serif`;
+    ctx.fillStyle='rgba(180,200,205,0.85)';
+    ctx.fillText(navigator.vibrate?'listen · closer = faster':'listen (no haptics on iOS)',cx,cy+52*DPR);
+  }
+
+  function renderDial(level,rgb){
+    ctx.globalCompositeOperation='source-over'; ctx.clearRect(0,0,W,H);
+    const cx=W/2, cy=H*0.44, R=Math.min(W,H)*0.30;
+    const A0=Math.PI*0.75, A1=Math.PI*2.25; // 270° sweep
+    // track
+    ctx.lineCap='round';
+    ctx.strokeStyle='rgba(150,220,215,0.16)';ctx.lineWidth=14*DPR;
+    ctx.beginPath();ctx.arc(cx,cy,R,A0,A1);ctx.stroke();
+    // value arc
+    ctx.strokeStyle=rgbStr(rgb);ctx.lineWidth=14*DPR;
+    ctx.beginPath();ctx.arc(cx,cy,R,A0,A0+(A1-A0)*level);ctx.stroke();
+    // peak tick
+    const pa=A0+(A1-A0)*peak;
+    ctx.strokeStyle='#ffffff';ctx.lineWidth=3*DPR;
+    ctx.beginPath();ctx.arc(cx,cy,R,pa-0.02,pa+0.02);ctx.stroke();
+    // center text
+    ctx.fillStyle=rgbStr(rgb);ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.font=`700 ${Math.round(52*DPR)}px "IBM Plex Mono",monospace`;
+    ctx.fillText(Math.round(level*100)+'%',cx,cy-6*DPR);
+    ctx.font=`500 ${Math.round(14*DPR)}px "IBM Plex Mono",monospace`;
+    ctx.fillStyle='rgba(180,200,205,0.85)';
+    ctx.fillText('peak '+Math.round(peak*100)+'%',cx,cy+34*DPR);
+    if(heading!=null){ctx.fillText(Math.round(heading).toString().padStart(3,'0')+'°  bearing',cx,cy+56*DPR);}
   }
 
   function labelsForField(){
@@ -488,7 +650,7 @@
   modeBtn.addEventListener('click',()=>{mode=mode==='low'?'high':'low';modeBtn.dataset.on=mode;
     if(mode==='low'){modeName.textContent='LOW · magnitude';modeHint.textContent='metal, magnets, static structure';}
     else{modeName.textContent='HIGH · activity';modeHint.textContent='wires, motors, speakers, spikes';}});
-  clearBtn.addEventListener('click',()=>{parts.length=0;ctx.clearRect(0,0,W,H);calibrate();});
+  clearBtn.addEventListener('click',()=>{parts.length=0;ringsH=[];ctx.clearRect(0,0,W,H);resetData();calibrate();});
 })();
 </script>
 
