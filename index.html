@@ -194,6 +194,7 @@
     <button class="pill" data-v="trail">Trail</button>
     <button class="pill" data-v="hunt">Hunt</button>
     <button class="pill" data-v="dial">Dial</button>
+    <a class="pill" href="dome.html" style="text-decoration:none">◑ 3D</a>
   </div>
 
   <div class="dock">
@@ -312,7 +313,7 @@
     document.querySelectorAll('.pill').forEach(p=>p.classList.toggle('on',p.dataset.v===v));
     if(v==='hunt') ensureAudio();
   }
-  $('views').addEventListener('click',e=>{const b=e.target.closest('.pill');if(b)setView(b.dataset.v);});
+  $('views').addEventListener('click',e=>{const b=e.target.closest('.pill');if(b&&b.dataset.v)setView(b.dataset.v);});
 
   // ---- peak-hold + history + heat map (shared data) ----
   let peak=0, peakHeading=0;
