@@ -211,11 +211,11 @@
         actVal=$('actVal'),actUnit=$('actUnit'),actLabel=$('actLabel'),actState=$('actState'),
         secVal=$('secVal'),secLabel=$('secLabel'),secSub=$('secSub'),
         pulse=$('pulse'),ring=$('ring'),note=$('note'),compass=$('compass'),core=$('core'),
-        legmark=$('legmark'),frame=$('frame'),
+        legmark=$('legmark'),frameEl=$('frame'),
         modeBtn=$('mode'),modeName=$('modeName'),modeHint=$('modeHint'),clearBtn=$('clear');
-  function placeFrame(){const m=Math.min(innerWidth,innerHeight);const w=Math.min(innerWidth-40,340),
-    h=Math.min(innerHeight-260,460);frame.style.left=((innerWidth-w)/2)+'px';frame.style.top=((innerHeight-h)/2)+'px';
-    frame.style.width=w+'px';frame.style.height=h+'px';}
+  function placeFrame(){const w=Math.min(innerWidth-40,340),
+    h=Math.min(innerHeight-260,460);frameEl.style.left=((innerWidth-w)/2)+'px';frameEl.style.top=((innerHeight-h)/2)+'px';
+    frameEl.style.width=w+'px';frameEl.style.height=h+'px';}
   addEventListener('resize',placeFrame);placeFrame();
   const ctx=paint.getContext('2d');
   const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
